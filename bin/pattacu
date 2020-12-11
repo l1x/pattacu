@@ -1,0 +1,282 @@
+#!/usr/bin/env python
+
+from datetime import date, datetime
+import argparse
+import http.client
+import json
+import logging
+import os
+import sys
+import time
+import toml
+import urllib.parse
+
+class HttpClient():
+
+    def __init__(self):
+        logging.debug('HttpClient init')
+
+    def open_connection(self):
+        conn = http.client.HTTPConnection('localhost', 80, timeout=2)
+        conn.set_debuglevel(0)
+        logging.debug('HttpClient connection debuglevel: {}'.format(conn.debuglevel))
+        return conn
+
+class Main():
+
+    request_headers = {"Content-type": "application/json",  "Accept": "application/json"}
+    request_body    = None
+
+    #
+    ## Internal Functions
+    #
+
+    def str2bool(self, v):
+        if isinstance(v, bool):
+           return v
+        if v.lower() in ('yes', 'true', 't', 'y', '1'):
+            return True
+        elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+            return False
+        else:
+            raise argparse.ArgumentTypeError('Boolean value expected.')
+
+    def valid_action(self, action):
+        if action in ["FlushMetrics", "InstanceStart", "SendCtrlAltDel"]:
+            return action
+        else:
+            raise argparse.ArgumentTypeError('Not a valid action: {}'.format(action))
+
+    def log_return(self, res):
+        body = res.read().decode("utf-8")
+        json_body = json.dumps(body, indent=2, sort_keys=True)
+        logging.info('HTTP Status: {} HTTP Reason: {} HTTP body: {}'.format(res.status, res.reason, json_body))
+
+    #
+    ## Firecracker Functions
+    #
+
+    def describe_instance(self, args, config):
+        conn = HttpClient().open_connection()
+        try:
+            req = conn.request('GET', '/', self.request_body, self.request_headers)
+            res = conn.getresponse()
+            self.log_return(res)
+        except Exception as e:
+            logging.error('Exception while describe_instance: {}'.format(e))
+        
+
+    def put_boot_source(self, args, config):
+        conn = HttpClient().open_connection()
+        self.request_body = {
+            'boot_args': args.boot_args,
+            'kernel_image_path': args.kernel_image_path
+        }
+        if args.initrd_path: self.request_body['initrd_path'] = args.initrd_path
+        request_body_json = json.dumps(self.request_body)
+        logging.info('{}'.format(request_body_json))
+        try: 
+            req = conn.request('PUT', '/boot-source', request_body_json, self.request_headers)
+            res = conn.getresponse()
+            self.log_return(res)
+        except Exception as e:
+            logging.error('Exception while put_boot_source: {}'.format(e))
+
+
+    def put_drives(self, args, config):
+        conn = HttpClient().open_connection()
+        self.request_body = { 
+            "drive_id": args.drive_id,
+            "path_on_host":  args.path,
+            "is_root_device": args.root_device,
+            "is_read_only": args.read_only
+        }
+        request_body_json = json.dumps(self.request_body)
+        logging.info('{}'.format(request_body_json))
+        try: 
+            req = conn.request('PUT', '/drives/{}'.format(args.drive_id), request_body_json, self.request_headers)
+            res = conn.getresponse()
+            self.log_return(res)
+        except Exception as e:
+            logging.error('Exception while put_boot_source: {}'.format(e))
+
+
+    def put_machine_config(self, args, config):
+        conn = HttpClient().open_connection()
+        self.request_body = { 
+            "vcpu_count": args.vcpu_count,
+            "mem_size_mib": args.mem_size_mib,
+            "ht_enabled": args.ht_enabled,
+        }
+        
+        if args.cpu_template: self.request_body['cpu_template'] = args.cpu_template
+        if args.track_dirty_pages: self.request_body['track_dirty_pages'] = args.track_dirty_pages
+      
+        request_body_json = json.dumps(self.request_body)
+        logging.info('{}'.format(request_body_json))
+        try: 
+            req = conn.request('PUT', '/machine-config', request_body_json, self.request_headers)
+            res = conn.getresponse()
+            self.log_return(res)
+        except Exception as e:
+            logging.error('Exception while put_machine_config: {}'.format(e))
+
+
+    def put_network_interfaces(self, args, config):
+        conn = HttpClient().open_connection()
+        self.request_body = { 
+            "iface_id": args.iface_id,
+            "guest_mac": args.guest_mac,
+            "host_dev_name": args.host_dev_name
+        }
+        request_body_json = json.dumps(self.request_body)
+        logging.info('{}'.format(request_body_json))
+        try: 
+            req = conn.request('PUT', '/network-interfaces/{}'.format(args.iface_id), request_body_json, self.request_headers)
+            res = conn.getresponse()
+            self.log_return(res)
+        except Exception as e:
+            logging.error('Exception while put_network_interfaces: {}'.format(e))
+
+
+    def put_actions(self, args, config):
+        conn = HttpClient().open_connection()
+        self.request_body = { 
+            "action_type": args.action_type,
+        }
+        request_body_json = json.dumps(self.request_body)
+        logging.info('{}'.format(request_body_json))
+        try: 
+            req = conn.request('PUT', '/actions', request_body_json, self.request_headers)
+            res = conn.getresponse()
+            self.log_return(res)
+        except Exception as e:
+            logging.error('Exception while put_action: {}'.format(e))
+            
+
+    def noop(self, args=None, config=None):
+        logging.error('Not implemented function is called')
+
+    switcher = {
+        'describe-instance': describe_instance,
+        'put-boot-source': put_boot_source,
+        'put-drives': put_drives,
+        'put-machine-config': put_machine_config,
+        'put-network-interfaces': put_network_interfaces,
+        'put-actions': put_actions
+    }
+
+    def args_switch(self, args, config):
+        logging.debug('args: %s, config: %s', args, config)
+        fn = self.switcher.get(args.func, self.noop)
+        logging.debug('fn: %s', fn)
+        return fn(self=self, args=args, config=config)
+
+
+    def main(self):
+        try:
+            exe_path = os.path.dirname(os.path.realpath(sys.argv[0]))
+            config = toml.load(os.path.join(exe_path, '..', 'config', 'config.toml'))
+            log_folder_relative = config.get('main', {}).get('log_folder', 'logs')
+            log_folder_absolute = os.path.join(exe_path, '..', log_folder_relative)
+            if not os.path.isdir(log_folder_absolute): os.makedirs(log_folder_absolute, 0o750, exist_ok=True)
+            today = str(date.today())
+            log_handlers = []
+            log_handlers.append(logging.FileHandler("{0}/{1}.{2}.log".format(log_folder_absolute, today, os.getpid())))
+            log_handlers.append(logging.StreamHandler(sys.stdout))
+            logging.basicConfig(
+                level=logging.INFO,
+                format=config.get('main', {}).get('log_pattern', '%(asctime)s %(levelname)-4s %(message)s'),
+                datefmt=config.get('main', {}).get('log_date_fmt', '%Y-%m-%d %H:%M:%S'),
+                handlers=log_handlers)
+
+            parser = argparse.ArgumentParser(prog='pattacu')
+
+            subparsers = parser.add_subparsers()
+
+            # /
+
+            describe_instance = subparsers.add_parser('describe-instance')
+            describe_instance.add_argument_group('describe-instance', '')
+            describe_instance.set_defaults(func='describe-instance')
+            
+            # /boot-source
+
+            put_boot_source = subparsers.add_parser('put-boot-source')
+            put_boot_source.add_argument('-b', '--boot-args', action='store', required=True)
+            put_boot_source.add_argument('-i', '--initrd-path', action='store', required=False)
+            put_boot_source.add_argument('-k', '--kernel-image-path', action='store', required=True)
+            put_boot_source.add_argument_group(
+                'put-boot-source', 
+                '/boot-source Creates new boot source if one does not already exist, otherwise updates it. Will fail if update is not possible. Pre-boot only')
+            put_boot_source.set_defaults(func='put-boot-source')
+
+            # /drives/{drive_id}
+
+            put_drives = subparsers.add_parser('put-drives')
+            put_drives.add_argument('--drive-id', action='store', required=True)
+            put_drives.add_argument('--read-only', action='store', required=True, type=self.str2bool)
+            put_drives.add_argument('--root-device', action='store', required=True, type=self.str2bool)
+            put_drives.add_argument('--path', action='store', required=True)
+            put_drives.add_argument_group(
+                'put-drives', 
+                '')
+            put_drives.set_defaults(func='put-drives')
+
+            # /machine-config
+
+            put_machine_config = subparsers.add_parser('put-machine-config')
+            put_machine_config.add_argument('--ht-enabled', action='store', required=True, type=self.str2bool)
+            put_machine_config.add_argument('--mem-size-mib', action='store', required=True, type=int)
+            put_machine_config.add_argument('--vcpu-count', action='store', required=True, type=int)
+            put_machine_config.add_argument('--cpu-template', action='store', required=False)
+            put_machine_config.add_argument('--track-dirty-pages', action='store', required=False, type=self.str2bool)
+            put_machine_config.add_argument_group(
+                'put_put-machine-config', 
+                '')
+            put_machine_config.set_defaults(func='put-machine-config')
+
+            # /network-interfaces/{iface_id}
+
+            put_network_interfaces = subparsers.add_parser('put-network-interfaces')
+            put_network_interfaces.add_argument('--iface-id', action='store', required=True)
+            put_network_interfaces.add_argument('--guest-mac', action='store', required=True)
+            put_network_interfaces.add_argument('--host-dev-name', action='store', required=True)
+            put_network_interfaces.add_argument_group(
+                'put_put-networkinterfaces', 
+                '')
+            put_network_interfaces.set_defaults(func='put-network-interfaces')
+            
+            # /actions
+
+            put_actions = subparsers.add_parser('put-actions')
+            put_actions.add_argument('--action-type', action='store', required=True, type=self.valid_action)
+            put_actions.add_argument_group(
+                'put-actions', 
+                '')
+            put_actions.set_defaults(func='put-actions')
+
+            args = parser.parse_args()
+
+            logging.info('ARGS: %s', args)
+
+            if not any(vars(args).values()):
+                logging.error("No parameter were passed")
+                parser.print_help()
+                exit(1)
+            else:
+                self.args_switch(args, config)
+
+        except KeyboardInterrupt:
+            logging.info("Ctrl+c was pressed, exiting...")
+            exit(0)
+        except Exception as e:
+            logging.error('Exception caught in main')
+            logging.exception('Exception caught: %s', e)
+            exit(1)
+        finally:
+            logging.info("Quitting...")
+
+if __name__ == '__main__':
+    m = Main()
+    exit(m.main())

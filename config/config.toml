@@ -1,0 +1,10 @@
+title = "pattacu"
+
+[developer]
+name = "Istvan Szukacs <istvan@lambdainsight.com>"
+dob = 2020-12-05T06:24:22Z
+
+[main]
+log_pattern = '%(asctime)s %(levelname)-4s %(message)s'
+log_folder = 'logs'
+log_date_fmt = '%Y-%m-%d %H:%M:%S'
