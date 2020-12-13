@@ -67,6 +67,9 @@ rm -f /data/fc/firecracker.socket
 ### Configuring host networking
 
 ```bash
+modprobe tun
+# sudo apk add iproute2 or similar for the ip command
+sudo ip tuntap add tap0 mode tap
 sudo ip addr add 172.16.0.1/24 dev tap0
 sudo ip link set tap0 up
 sudo sh -c "echo 1 > /proc/sys/net/ipv4/ip_forward"
